@@ -4,11 +4,13 @@ from data_loader import DataLoader
 from models.user_cf import UserCF
 from models.item_cf import ItemCF
 from models.matrix_factorization import MatrixFactorization
+from models.ncf import NCF
 
 MODEL_MAP = {
     'user_cf': UserCF,
     'item_cf': ItemCF,
-    'matrix_factorization': MatrixFactorization
+    'matrix_factorization': MatrixFactorization,
+    'ncf': NCF
 }
 
 def main():
@@ -29,9 +31,24 @@ def main():
             'lr': 0.005,      # 学习率
             'reg': 0.02       # 正则化系数
         }
+    elif args.model == 'ncf':
+        # 为神经协同过滤模型设置参数
+        model_kwargs = {
+            'n_factors': 8,    # 隐向量维度
+            'layers': [16, 8], # MLP层结构
+            'lr': 0.001,      # 学习率
+            'n_epochs': 50,   # 训练轮数
+            'batch_size': 256, # 批次大小
+            'dropout': 0.2,   # Dropout比例
+            'alpha': 0.5      # GMF和MLP的融合权重
+        }
 
     pipeline = Pipeline(args.data, MODEL_MAP[args.model], model_kwargs=model_kwargs)
-    pipeline.run()
+    rmse, mae, ndcg10 = pipeline.run()
+    print(f"\n评估指标汇总:")
+    print(f"RMSE: {rmse:.4f}")
+    print(f"MAE: {mae:.4f}")
+    print(f"NDCG@10: {ndcg10:.4f}")
     if args.user:
         if args.detail:
             # 显示详细的推荐信息

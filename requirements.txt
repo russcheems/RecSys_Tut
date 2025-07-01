@@ -3,4 +3,4 @@ pandas
 matplotlib
 scikit-learn
 seaborn
-tensorflow 
+torch>=2.6.0

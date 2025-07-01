@@ -112,36 +112,60 @@ class Pipeline:
         
         # 计算NDCG@10
         ndcg_scores = []
-        for user_id in user_item_true:
-            try:
-                # 获取用户索引
-                if user_id not in user_mapping:
-                    continue
-                    
-                user_idx = user_mapping[user_id]
-                
-                # 获取推荐结果
+        # 设置计算NDCG的用户数量上限，避免处理过多用户导致卡顿
+        max_users_for_ndcg = 200  # 增加用户样本数量
+        
+        # 随机选择用户进行NDCG计算，以获得更具代表性的样本
+        all_user_ids = list(user_item_true.keys())
+        if len(all_user_ids) > max_users_for_ndcg:
+            import random
+            random.seed(42)  # 设置随机种子，确保结果可重现
+            user_ids_for_ndcg = random.sample(all_user_ids, max_users_for_ndcg)
+        else:
+            user_ids_for_ndcg = all_user_ids
+            
+        print(f"计算NDCG@10，使用 {len(user_ids_for_ndcg)} 个用户样本")
+        
+        # 批量处理用户，每批50个用户
+        batch_size = 50
+        for i in range(0, len(user_ids_for_ndcg), batch_size):
+            batch_users = user_ids_for_ndcg[i:i+batch_size]
+            print(f"处理NDCG批次 {i//batch_size + 1}/{(len(user_ids_for_ndcg) + batch_size - 1)//batch_size}")
+            
+            for user_id in batch_users:
                 try:
-                    rec_item_indices = self.model.recommend(user_idx, top_k=10)
-                    # 确保推荐结果不为None
-                    if rec_item_indices is None:
+                    # 获取用户索引
+                    if user_id not in user_mapping:
+                        continue
+                        
+                    user_idx = user_mapping[user_id]
+                    
+                    # 获取推荐结果
+                    try:
+                        rec_item_indices = self.model.recommend(user_idx, top_k=10)
+                        # 确保推荐结果不为None
+                        if rec_item_indices is None:
+                            rec_item_indices = []
+                    except Exception as e:
+                        print(f"为用户 {user_id} 推荐商品时出错: {str(e)}")
                         rec_item_indices = []
+                    
+                    # 转换为商品ID
+                    rec_item_ids = [rev_item_mapping[i] for i in rec_item_indices if i in rev_item_mapping]
+                    
+                    # 计算NDCG
+                    ndcg = ndcg_at_k(user_item_true[user_id], rec_item_ids, k=10)
+                    ndcg_scores.append(ndcg)
                 except Exception as e:
-                    print(f"为用户 {user_id} 推荐商品时出错: {str(e)}")
-                    rec_item_indices = []
-                
-                # 转换为商品ID
-                rec_item_ids = [rev_item_mapping[i] for i in rec_item_indices if i in rev_item_mapping]
-                
-                # 计算NDCG
-                ndcg = ndcg_at_k(user_item_true[user_id], rec_item_ids, k=10)
-                ndcg_scores.append(ndcg)
-            except Exception as e:
-                print(f"计算用户 {user_id} 的NDCG时出错: {str(e)}")
-                continue
+                    print(f"计算用户 {user_id} 的NDCG时出错: {str(e)}")
+                    continue
         
         # 计算平均NDCG
         ndcg10 = np.mean(ndcg_scores) if len(ndcg_scores) > 0 else 0.0
+        print(f"有效NDCG计算用户数: {len(ndcg_scores)}")
+        if len(ndcg_scores) > 0:
+            print(f"NDCG@10分布: 最小值={min(ndcg_scores):.4f}, 最大值={max(ndcg_scores):.4f}, 中位数={np.median(ndcg_scores):.4f}")
+
         
         # 打印评估结果
         print(f"Test RMSE: {rmse:.4f}")
@@ -225,28 +249,40 @@ class Pipeline:
             
         user_idx = user_mapping[user_id]
         
-        # 获取测试数据
+        # 获取训练和测试数据
+        train_data = self.data_loader.train_data
         test_data = self.data_loader.test_data
-        if test_data is None:
-            raise ValueError("测试数据未加载，请先运行pipeline.run()方法。")
+        if train_data is None or test_data is None:
+            raise ValueError("训练或测试数据未加载，请先运行pipeline.run()方法。")
         
-        # 过滤出用户的测试数据
-        if 'userID' not in test_data.columns:
-            raise ValueError("测试数据中没有userID列。")
+        # 过滤出用户的训练和测试数据
+        if 'userID' not in train_data.columns or 'userID' not in test_data.columns:
+            raise ValueError("数据中没有userID列。")
             
+        user_train_data = train_data[train_data['userID'] == user_id]
         user_test_data = test_data[test_data['userID'] == user_id]
         
-        # 如果用户在测试集中没有评分，则只显示推荐结果
-        if len(user_test_data) == 0:
-            print(f"用户 {user_id} 在测试集中没有评分记录")
+        # 如果用户在训练集和测试集中都没有评分，则只显示推荐结果
+        if len(user_train_data) == 0 and len(user_test_data) == 0:
+            print(f"用户 {user_id} 在数据集中没有评分记录")
             rec_items = self.recommend_for_user(user_id, top_k)
             print(f"\n预测用户 {user_id} 喜欢的前 {top_k} 个商品:")
             for i, item_id in enumerate(rec_items):
                 print(f"{i+1}. 商品ID: {item_id}")
             return
         
-        # 构建用户实际评分字典
+        # 构建用户实际评分字典（同时考虑训练集和测试集）
         user_ratings = {}
+        
+        # 添加训练集评分
+        for _, row in user_train_data.iterrows():
+            if 'itemID' not in row or 'rating' not in row:
+                continue
+            item_id = row['itemID']
+            rating = row['rating']
+            user_ratings[item_id] = float(rating)
+        
+        # 添加测试集评分
         for _, row in user_test_data.iterrows():
             if 'itemID' not in row or 'rating' not in row:
                 continue
@@ -256,7 +292,7 @@ class Pipeline:
         
         # 如果没有有效评分，提前返回
         if not user_ratings:
-            print(f"用户 {user_id} 在测试集中没有有效的评分记录")
+            print(f"用户 {user_id} 在数据集中没有有效的评分记录")
             return
         
         # 获取用户实际评分最高的前k个商品
