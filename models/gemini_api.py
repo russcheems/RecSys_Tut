@@ -2,7 +2,7 @@
 import google.generativeai as genai
  
  
-genai.configure(api_key='AIzaSyCU7Aw1auX2L5lCRbxdgfOw6KEl8nNVGnQ')  
+genai.configure(api_key='key')  
  
 # 查询模型
 for m in genai.list_models():
